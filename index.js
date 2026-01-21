@@ -6,34 +6,18 @@ import axios from "axios";
 import FormData from "form-data";
 
 const app = express();
-
-// IMPORTANT: HubSpot sends JSON
 app.use(express.json({ limit: "10mb" }));
 
 const PORT = process.env.PORT || 3000;
 
-// -----------------------------
-// Health check (Render likes this)
-// -----------------------------
 app.get("/healthz", (_req, res) => {
   res.status(200).send("ok");
 });
 
-// -----------------------------
-// Upload endpoint
-// -----------------------------
 app.post("/upload", async (req, res) => {
   try {
-    const {
-      agentId,
-      uid,
-      fileName,
-      content
-    } = req.body;
+    const { agentId, uid, fileName, content } = req.body || {};
 
-    // -----------------------------
-    // Validate inputs
-    // -----------------------------
     if (!agentId || !uid || !fileName || !content) {
       return res.status(400).json({
         error: "Missing required fields",
@@ -43,33 +27,31 @@ app.post("/upload", async (req, res) => {
 
     if (!process.env.PHONELY_API_KEY) {
       return res.status(500).json({
-        error: "Missing PHONELY_API_KEY env variable"
+        error: "Missing PHONELY_API_KEY"
       });
     }
 
-    // -----------------------------
-    // Create a REAL physical file
-    // -----------------------------
-    const tmpDir = os.tmpdir();
-    const safeFileName = fileName.endsWith(".txt")
+    // ---- create REAL file on disk ----
+    const safeName = fileName.endsWith(".txt")
       ? fileName
       : `${fileName}.txt`;
 
-    const filePath = path.join(tmpDir, safeFileName);
-
+    const filePath = path.join(os.tmpdir(), safeName);
     fs.writeFileSync(filePath, content, "utf8");
 
-    // -----------------------------
-    // Build multipart form
-    // -----------------------------
+    // ---- build multipart EXACTLY as Phonely expects ----
     const form = new FormData();
     form.append("uid", uid);
     form.append("agentId", agentId);
-    form.append("files", fs.createReadStream(filePath));
+    form.append(
+      "files",
+      fs.createReadStream(filePath),
+      {
+        filename: safeName,
+        contentType: "text/plain"
+      }
+    );
 
-    // -----------------------------
-    // Send to Phonely
-    // -----------------------------
     const response = await axios.post(
       "https://app.phonely.ai/api/agent-documents",
       form,
@@ -82,9 +64,6 @@ app.post("/upload", async (req, res) => {
       }
     );
 
-    // -----------------------------
-    // Cleanup temp file
-    // -----------------------------
     fs.unlinkSync(filePath);
 
     return res.status(200).json({
@@ -92,19 +71,15 @@ app.post("/upload", async (req, res) => {
       phonelyResponse: response.data
     });
 
-  } catch (error) {
-    console.error("Upload failed:", error?.response?.data || error.message);
-
+  } catch (err) {
+    console.error("Upload failed:", err?.response?.data || err.message);
     return res.status(500).json({
       error: "Upload to Phonely failed",
-      details: error?.response?.data || error.message
+      details: err?.response?.data || err.message
     });
   }
 });
 
-// -----------------------------
-// Start server
-// -----------------------------
 app.listen(PORT, () => {
-  console.log(`Phonely upload proxy running on port ${PORT}`);
+  console.log(`Phonely KB upload proxy running on port ${PORT}`);
 });
