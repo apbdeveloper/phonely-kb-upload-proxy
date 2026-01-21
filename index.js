@@ -1,50 +1,110 @@
 import express from "express";
-import multer from "multer";
-import fetch from "node-fetch";
+import fs from "fs";
+import path from "path";
+import os from "os";
+import axios from "axios";
 import FormData from "form-data";
 
 const app = express();
-const upload = multer(); // in-memory file handling
 
-app.post("/upload", upload.single("file"), async (req, res) => {
+// IMPORTANT: HubSpot sends JSON
+app.use(express.json({ limit: "10mb" }));
+
+const PORT = process.env.PORT || 3000;
+
+// -----------------------------
+// Health check (Render likes this)
+// -----------------------------
+app.get("/healthz", (_req, res) => {
+  res.status(200).send("ok");
+});
+
+// -----------------------------
+// Upload endpoint
+// -----------------------------
+app.post("/upload", async (req, res) => {
   try {
-    const { uid, agentId } = req.body;
-    const file = req.file;
+    const {
+      agentId,
+      uid,
+      fileName,
+      content
+    } = req.body;
 
-    if (!uid || !agentId || !file) {
-      return res.status(400).json({ error: "Missing uid, agentId, or file" });
+    // -----------------------------
+    // Validate inputs
+    // -----------------------------
+    if (!agentId || !uid || !fileName || !content) {
+      return res.status(400).json({
+        error: "Missing required fields",
+        required: ["agentId", "uid", "fileName", "content"]
+      });
     }
 
+    if (!process.env.PHONELY_API_KEY) {
+      return res.status(500).json({
+        error: "Missing PHONELY_API_KEY env variable"
+      });
+    }
+
+    // -----------------------------
+    // Create a REAL physical file
+    // -----------------------------
+    const tmpDir = os.tmpdir();
+    const safeFileName = fileName.endsWith(".txt")
+      ? fileName
+      : `${fileName}.txt`;
+
+    const filePath = path.join(tmpDir, safeFileName);
+
+    fs.writeFileSync(filePath, content, "utf8");
+
+    // -----------------------------
+    // Build multipart form
+    // -----------------------------
     const form = new FormData();
     form.append("uid", uid);
     form.append("agentId", agentId);
-    form.append("files", file.buffer, {
-      filename: file.originalname,
-      contentType: file.mimetype
+    form.append("files", fs.createReadStream(filePath));
+
+    // -----------------------------
+    // Send to Phonely
+    // -----------------------------
+    const response = await axios.post(
+      "https://app.phonely.ai/api/agent-documents",
+      form,
+      {
+        headers: {
+          ...form.getHeaders(),
+          "X-Authorization": process.env.PHONELY_API_KEY
+        },
+        maxBodyLength: Infinity
+      }
+    );
+
+    // -----------------------------
+    // Cleanup temp file
+    // -----------------------------
+    fs.unlinkSync(filePath);
+
+    return res.status(200).json({
+      success: true,
+      phonelyResponse: response.data
     });
 
-    const response = await fetch("https://app.phonely.ai/api/agent-documents", {
-      method: "POST",
-      headers: {
-        "X-Authorization": process.env.PHONELY_API_KEY
-      },
-      body: form
+  } catch (error) {
+    console.error("Upload failed:", error?.response?.data || error.message);
+
+    return res.status(500).json({
+      error: "Upload to Phonely failed",
+      details: error?.response?.data || error.message
     });
-
-    const text = await response.text();
-
-    if (!response.ok) {
-      return res.status(response.status).json({ error: text });
-    }
-
-    res.json(JSON.parse(text));
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Upload failed" });
   }
 });
 
-const PORT = process.env.PORT || 3000;
+// -----------------------------
+// Start server
+// -----------------------------
 app.listen(PORT, () => {
-  console.log(`Proxy listening on port ${PORT}`);
+  console.log(`Phonely upload proxy running on port ${PORT}`);
 });
