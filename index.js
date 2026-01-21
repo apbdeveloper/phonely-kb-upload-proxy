@@ -44,13 +44,13 @@ app.post("/upload", async (req, res) => {
     form.append("uid", uid);
     form.append("agentId", agentId);
     form.append(
-      "files",
-      fs.createReadStream(filePath),
-      {
-        filename: safeName,
-        contentType: "text/plain"
-      }
-    );
+  "files[]",
+  fs.createReadStream(filePath),
+  {
+    filename: safeName,
+    contentType: "text/plain"
+  }
+);
 
     const response = await axios.post(
       "https://app.phonely.ai/api/agent-documents",
